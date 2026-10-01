@@ -1208,6 +1208,97 @@ describe("AuthStorage OAuth refresh race", () => {
 		}
 	});
 
+	for (const failure of ["abort", "network", "timeout"] as const) {
+		test(`a ${failure} in a forced MCP refresh does not poison a waiting automatic refresh`, async () => {
+			if (!authStorage || !store) throw new Error("test setup failed");
+			const firstRequest = Promise.withResolvers<void>();
+			const releaseFirstRequest = Promise.withResolvers<void>();
+			let requestCount = 0;
+			const server = Bun.serve({
+				port: 0,
+				fetch: async () => {
+					requestCount += 1;
+					if (requestCount === 1) {
+						firstRequest.resolve();
+						await releaseFirstRequest.promise;
+						if (failure === "network") return new Response("network failure", { status: 500 });
+						return new Response("late failure", { status: 500 });
+					}
+					return Response.json({
+						access_token: "automatic-access",
+						refresh_token: "automatic-refresh",
+						expires_in: 3600,
+					});
+				},
+			});
+			const controller = new AbortController();
+			const originalSetTimeout = globalThis.setTimeout;
+			if (failure === "timeout") {
+				vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+					handler: () => void,
+					delay?: number,
+					...args: unknown[]
+				) => {
+					if (delay === 10_000) return originalSetTimeout(handler, 0);
+					return originalSetTimeout(handler, delay, ...args);
+				}) as typeof setTimeout);
+			}
+			try {
+				const origin = `http://localhost:${server.port}`;
+				await authStorage.set("anthropic", [
+					{
+						type: "oauth",
+						access: "expired-access",
+						refresh: "initial-refresh",
+						expires: Date.now() - 60_000,
+						mcpBinding: { resourceOrigin: origin, tokenEndpoint: `${origin}/token` },
+					},
+				]);
+				const row = store.listAuthCredentials("anthropic")[0];
+				if (!row) throw new Error("expected OAuth credential");
+				vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, credentials) => {
+					const credential = credentials[provider];
+					if (!credential) return null;
+					return { newCredentials: credential, apiKey: credential.access };
+				});
+
+				const forced = authStorage.refreshCredentialById(row.id, controller.signal).then(
+					value => ({ value, error: undefined }),
+					error => ({ value: undefined, error }),
+				);
+				await firstRequest.promise;
+				const automaticResult = Promise.withResolvers<string | undefined>();
+				const automatic = withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {
+					automaticResult.resolve(await authStorage!.getApiKey("anthropic", "automatic-refresh"));
+				});
+				if (failure === "abort") controller.abort();
+				if (failure === "network") releaseFirstRequest.resolve();
+				const forcedOutcome = await forced;
+				if (failure === "abort") expect(forcedOutcome.error).toBeInstanceOf(Error);
+				if (failure === "network") expect(forcedOutcome.error).toBeInstanceOf(Error);
+				if (failure === "timeout")
+					expect(forcedOutcome.error).toMatchObject({ message: expect.stringMatching(/timed out/) });
+				await automatic;
+				expect(await automaticResult.promise).toBe("automatic-access");
+
+				const persisted = store.listAuthCredentials("anthropic")[0]?.credential;
+				expect(persisted).toMatchObject({
+					type: "oauth",
+					access: "automatic-access",
+					refresh: "automatic-refresh",
+				});
+				expect(authStorage.getEarliestUnblockAt("anthropic")).toBeUndefined();
+				await withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {
+					expect(await authStorage!.getApiKey("anthropic", "after-race")).toBe("automatic-access");
+				});
+			} finally {
+				releaseFirstRequest.resolve();
+				server.stop(true);
+				vi.restoreAllMocks();
+			}
+		});
+	}
+
 	test("an adopted token's definitive failure disables the row instead of looping, even for frozen errors", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
 
@@ -1872,6 +1963,109 @@ describe("AuthStorage OAuth refresh race", () => {
 			});
 		} finally {
 			peerStore.close();
+		}
+	});
+
+	test("a late lease release cannot erase a newer completed refresh", async () => {
+		if (!authStorage || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+		const sqliteStore = store;
+		await authStorage.set("anthropic", [
+			{ type: "oauth", access: "old-access", refresh: "old-refresh", expires: Date.now() - 60_000 },
+		]);
+		const row = store.listAuthCredentials("anthropic")[0];
+		if (!row) throw new Error("expected OAuth credential");
+		const now = Date.now();
+		const first = store.claimOAuthRefreshLease(row.id, "old-refresh", false, "attempt-a", now, 1);
+		expect(first.kind).toBe("claimed");
+		if (first.kind !== "claimed") return;
+		await Bun.sleep(10);
+		const second = store.claimOAuthRefreshLease(row.id, "old-refresh", false, "attempt-b", Date.now(), 15_000);
+		expect(second.kind).toBe("claimed");
+		if (second.kind !== "claimed") return;
+		expect(second.lease.owner).not.toBe(first.lease.owner);
+		expect(
+			store.completeOAuthRefreshLease(second.lease, {
+				type: "oauth",
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: Date.now() + 60 * 60_000,
+			}),
+		).toBe(true);
+
+		// This is the late failure/cleanup path from attempt A. It must be owner-CAS
+		// scoped and leave B's already persisted authority untouched.
+		expect(() => sqliteStore.releaseOAuthRefreshLease(first.lease)).not.toThrow();
+		expect(sqliteStore.listAuthCredentials("anthropic")[0]?.credential).toMatchObject({
+			type: "oauth",
+			access: "new-access",
+			refresh: "new-refresh",
+		});
+	});
+
+	test("same-instance refresh attempts use distinct lease owners while the second waits", async () => {
+		if (!authStorage || !(store instanceof SqliteAuthCredentialStore)) throw new Error("test setup failed");
+		const firstRequest = Promise.withResolvers<void>();
+		const releaseFirstRequest = Promise.withResolvers<void>();
+		let requestCount = 0;
+		const owners: string[] = [];
+		const originalClaim = store.claimOAuthRefreshLease.bind(store);
+		vi.spyOn(store, "claimOAuthRefreshLease").mockImplementation(
+			(credentialId, expectedRefresh, force, owner, nowMs, leaseMs) => {
+				owners.push(owner);
+				return originalClaim(credentialId, expectedRefresh, force, owner, nowMs, leaseMs);
+			},
+		);
+		const server = Bun.serve({
+			port: 0,
+			fetch: async () => {
+				requestCount += 1;
+				if (requestCount === 1) {
+					firstRequest.resolve();
+					await releaseFirstRequest.promise;
+				}
+				return Response.json({
+					access_token: "owner-check-access",
+					refresh_token: "owner-check-refresh",
+					expires_in: 3600,
+				});
+			},
+		});
+		try {
+			const origin = `http://localhost:${server.port}`;
+			await authStorage.set("anthropic", [
+				{
+					type: "oauth",
+					access: "expired-access",
+					refresh: "owner-check-old-refresh",
+					expires: Date.now() - 60_000,
+					mcpBinding: { resourceOrigin: origin, tokenEndpoint: `${origin}/token` },
+				},
+			]);
+			const row = store.listAuthCredentials("anthropic")[0];
+			if (!row) throw new Error("expected OAuth credential");
+			vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, credentials) => {
+				const credential = credentials[provider];
+				return credential ? { newCredentials: credential, apiKey: credential.access } : null;
+			});
+			const controller = new AbortController();
+			const forced = authStorage.refreshCredentialById(row.id, controller.signal);
+			await firstRequest.promise;
+			const automaticResult = Promise.withResolvers<string | undefined>();
+			const automatic = withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {
+				automaticResult.resolve(await authStorage!.getApiKey("anthropic", "owner-check"));
+			});
+			await Bun.sleep(100);
+			expect(owners.length).toBeGreaterThanOrEqual(2);
+			expect(new Set(owners).size).toBeGreaterThanOrEqual(2);
+			controller.abort();
+			releaseFirstRequest.resolve();
+			await expect(forced).rejects.toThrow("credential refresh aborted");
+			await automatic;
+			await expect(automaticResult.promise).resolves.toBe("owner-check-access");
+			await Bun.sleep(50);
+		} finally {
+			releaseFirstRequest.resolve();
+			server.stop(true);
 		}
 	});
 
