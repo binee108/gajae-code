@@ -119,17 +119,17 @@ export type AuthCredential = ApiKeyCredential | OAuthCredential;
 
 export type UsageLimitMarkResult =
 	| {
-			state: "marked";
-			failedRowId: number;
-			credentialKind: "oauth" | "api_key";
-			remainingCredentialIds: readonly number[];
-	  }
+		state: "marked";
+		failedRowId: number;
+		credentialKind: "oauth" | "api_key";
+		remainingCredentialIds: readonly number[];
+	}
 	| {
-			state: "not-marked";
-			failedRowId?: number;
-			credentialKind?: "oauth" | "api_key";
-			remainingCredentialIds: readonly number[];
-	  };
+		state: "not-marked";
+		failedRowId?: number;
+		credentialKind?: "oauth" | "api_key";
+		remainingCredentialIds: readonly number[];
+	};
 
 export interface MCPOAuthRefreshClient {
 	clientId?: string;
@@ -1367,7 +1367,7 @@ function storedCredentialArraysEqual(left: StoredCredential[], right: StoredCred
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AuthStorageUsageCache implements UsageCache {
-	constructor(private store: AuthCredentialStore) {}
+	constructor(private store: AuthCredentialStore) { }
 
 	get<T>(key: string): UsageCacheEntry<T> | undefined {
 		const raw = this.store.getCache(`${USAGE_CACHE_PREFIX}${key}`);
@@ -1519,8 +1519,8 @@ export class AuthStorage {
 		this.#usageRequestTimeoutMs = options.usageRequestTimeoutMs ?? DEFAULT_USAGE_REQUEST_TIMEOUT_MS;
 		const usageTimeoutForLease =
 			typeof this.#usageRequestTimeoutMs === "number" &&
-			Number.isFinite(this.#usageRequestTimeoutMs) &&
-			this.#usageRequestTimeoutMs > 0
+				Number.isFinite(this.#usageRequestTimeoutMs) &&
+				this.#usageRequestTimeoutMs > 0
 				? this.#usageRequestTimeoutMs
 				: DEFAULT_USAGE_REQUEST_TIMEOUT_MS;
 		this.#usageFetchLeaseMs = usageTimeoutForLease + USAGE_FETCH_LEASE_GRACE_MS;
@@ -1631,12 +1631,12 @@ export class AuthStorage {
 			evidenceApiKey === undefined || this.#runtimeOverrides.has(storageProvider) || configOverride !== undefined
 				? undefined
 				: this.#getCredentialsForProvider(storageProvider).find(
-						(credential): credential is Extract<AuthCredential, { type: "api_key" }> =>
-							credential.type === "api_key" &&
-							credential.key === evidenceApiKey &&
-							!credential.key.startsWith("!") &&
-							process.env[credential.key] === undefined,
-					);
+					(credential): credential is Extract<AuthCredential, { type: "api_key" }> =>
+						credential.type === "api_key" &&
+						credential.key === evidenceApiKey &&
+						!credential.key.startsWith("!") &&
+						process.env[credential.key] === undefined,
+				);
 		if (storedLiteral) {
 			return crypto
 				.createHash("sha256")
@@ -1669,11 +1669,10 @@ export class AuthStorage {
 			)
 			.map(credential => {
 				const resolved = this.#resolvedStoredApiKeyValues.get(storageProvider)?.get(credential.key);
-				return `${credential.key}\u0000${
-					credential.key.startsWith("!")
-						? (resolved?.fingerprint ?? "")
-						: (process.env[credential.key] ?? credential.key)
-				}`;
+				return `${credential.key}\u0000${credential.key.startsWith("!")
+					? (resolved?.fingerprint ?? "")
+					: (process.env[credential.key] ?? credential.key)
+					}`;
 			})
 			.join("\u0001");
 		// Account-backed OAuth rows fingerprint by row, identity, request metadata, and usability rather than token
@@ -4653,21 +4652,21 @@ export class AuthStorage {
 						reports:
 							options?.logIdentity === true
 								? resolved.map(report => ({
-										provider: report.provider,
-										limits: report.limits.length,
-										account: hashUsageDiagnosticValue(
-											this.#getUsageReportMetadataValue(report, "email") ??
-												this.#getUsageReportMetadataValue(report, "accountId") ??
-												this.#getUsageReportMetadataValue(report, "account") ??
-												this.#getUsageReportMetadataValue(report, "user") ??
-												this.#getUsageReportMetadataValue(report, "username") ??
-												this.#getUsageReportScopeAccountId(report),
-										),
-									}))
+									provider: report.provider,
+									limits: report.limits.length,
+									account: hashUsageDiagnosticValue(
+										this.#getUsageReportMetadataValue(report, "email") ??
+										this.#getUsageReportMetadataValue(report, "accountId") ??
+										this.#getUsageReportMetadataValue(report, "account") ??
+										this.#getUsageReportMetadataValue(report, "user") ??
+										this.#getUsageReportMetadataValue(report, "username") ??
+										this.#getUsageReportScopeAccountId(report),
+									),
+								}))
 								: {
-										count: resolved.length,
-										providers: [...new Set(resolved.map(report => report.provider))].sort(),
-									},
+									count: resolved.length,
+									providers: [...new Set(resolved.map(report => report.provider))].sort(),
+								},
 					});
 				}
 				return resolved;
@@ -5346,26 +5345,26 @@ export class AuthStorage {
 		const selectedOAuthCredential: OAuthCredentialSelection | undefined =
 			selectedCredential?.credential.type === "oauth"
 				? {
-						id: selectedCredential.id,
-						credential: selectedCredential.credential,
-						index: selectedCredential.index,
-						revision: selectedCredential.revision,
-					}
+					id: selectedCredential.id,
+					credential: selectedCredential.credential,
+					index: selectedCredential.index,
+					revision: selectedCredential.revision,
+				}
 				: undefined;
 		if (selectedCredential && !selectedOAuthCredential) return undefined;
 		const credentials = selectedOAuthCredential
 			? [selectedOAuthCredential]
 			: this.#getStoredCredentials(provider)
-					.filter(
-						(entry): entry is StoredCredential & { credential: OAuthCredential } =>
-							entry.credential.type === "oauth",
-					)
-					.map((entry, index) => ({
-						id: entry.id,
-						credential: entry.credential,
-						index,
-						revision: entry.revision,
-					}));
+				.filter(
+					(entry): entry is StoredCredential & { credential: OAuthCredential } =>
+						entry.credential.type === "oauth",
+				)
+				.map((entry, index) => ({
+					id: entry.id,
+					credential: entry.credential,
+					index,
+					revision: entry.revision,
+				}));
 
 		if (credentials.length === 0) return undefined;
 
@@ -5385,9 +5384,9 @@ export class AuthStorage {
 		const candidates = shouldRank
 			? await this.#rankOAuthSelections({ providerKey, provider, order, credentials, options, strategy: strategy! })
 			: order
-					.map(idx => credentials[idx])
-					.filter((selection): selection is OAuthCredentialSelection => Boolean(selection))
-					.map(selection => ({ selection, usage: null, usageChecked: false }));
+				.map(idx => credentials[idx])
+				.filter((selection): selection is OAuthCredentialSelection => Boolean(selection))
+				.map(selection => ({ selection, usage: null, usageChecked: false }));
 
 		// Soft `--prefer-credential` preference: reorder the preferred row to the
 		// front when it is usable, ahead of the session-stickiness reorder below so
@@ -5594,7 +5593,7 @@ export class AuthStorage {
 					const owner = this.#oauthRefreshLeaseOwner;
 
 					const deadline = Date.now() + OAUTH_REFRESH_LEASE_MS;
-					for (;;) {
+					for (; ;) {
 						if (signal?.aborted) failBeforeRefresh(new Error("OAuth token refresh aborted by caller"));
 						const claim = claimLease(
 							credentialId,
@@ -6229,7 +6228,7 @@ export class AuthStorage {
 		if (this.#getCredentialSelector(provider, undefined, options?.sessionId)) return undefined;
 
 		const attemptedApiKeyIndices = new Set<number>();
-		for (;;) {
+		for (; ;) {
 			const apiKeySelection = this.#selectApiKeyCredential(provider, undefined, attemptedApiKeyIndices);
 			if (!apiKeySelection) break;
 			attemptedApiKeyIndices.add(apiKeySelection.index);
@@ -6318,7 +6317,7 @@ export class AuthStorage {
 
 		const attemptedApiKeyIndices = new Set<number>();
 		if (!selectedCredential) {
-			for (;;) {
+			for (; ;) {
 				const apiKeySelection = this.#selectApiKeyCredential(provider, sessionId, attemptedApiKeyIndices);
 				if (!apiKeySelection) break;
 				attemptedApiKeyIndices.add(apiKeySelection.index);
@@ -6336,7 +6335,7 @@ export class AuthStorage {
 		}
 
 		if (!selectedCredential) {
-			for (;;) {
+			for (; ;) {
 				const apiKeySelection = this.#selectApiKeyCredential(provider, sessionId, attemptedApiKeyIndices, true);
 				if (!apiKeySelection) break;
 				attemptedApiKeyIndices.add(apiKeySelection.index);
@@ -6378,7 +6377,7 @@ export class AuthStorage {
 			}
 		}
 		const attemptedApiKeyIndices = new Set<number>();
-		for (;;) {
+		for (; ;) {
 			const apiKeySelection = this.#selectApiKeyCredential(provider, sessionId, attemptedApiKeyIndices);
 			if (!apiKeySelection) return undefined;
 			attemptedApiKeyIndices.add(apiKeySelection.index);
@@ -7430,8 +7429,8 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		const serialized = serializeCredential(
 			(
 				this.#db.prepare("SELECT provider FROM auth_credentials WHERE id = ?").get(lease.credentialId) as
-					| { provider?: string }
-					| undefined
+				| { provider?: string }
+				| undefined
 			)?.provider ?? "",
 			credential,
 		);
@@ -7808,7 +7807,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		if (prefix.length === 0) return;
 		try {
 			this.#deleteCachePrefixStmt.run(prefix.length, prefix);
-		} catch {}
+		} catch { }
 	}
 
 	cleanExpiredCache(): void {
