@@ -5550,6 +5550,19 @@ export class AuthStorage {
 		let refreshPromise: Promise<OAuthCredentials>;
 		let localDial = false;
 		let refreshLease: OAuthRefreshLease | undefined;
+		let refreshLeaseCompleted = false;
+
+		const releaseRefreshLease = (): void => {
+			if (refreshLease && !refreshLeaseCompleted) {
+				this.#store.releaseOAuthRefreshLease?.(refreshLease);
+				refreshLease = undefined;
+			}
+		};
+
+		function failBeforeRefresh(error: unknown): never {
+			releaseRefreshLease();
+			throw error;
+		}
 
 		// Caller override > store-level hook > local per-provider refresh.
 		// `RemoteAuthCredentialStore` exposes the hook so a broker-backed gateway
@@ -5582,7 +5595,7 @@ export class AuthStorage {
 
 					const deadline = Date.now() + OAUTH_REFRESH_LEASE_MS;
 					for (;;) {
-						if (signal?.aborted) throw new Error("OAuth token refresh aborted by caller");
+						if (signal?.aborted) failBeforeRefresh(new Error("OAuth token refresh aborted by caller"));
 						const claim = claimLease(
 							credentialId,
 							credential.refresh,
@@ -5591,7 +5604,9 @@ export class AuthStorage {
 							Date.now(),
 							OAUTH_REFRESH_LEASE_MS,
 						);
-						if (claim.kind === "missing") throw new Error("OAuth refresh credential disappeared");
+						if (claim.kind === "missing") {
+							failBeforeRefresh(new Error("OAuth refresh credential disappeared"));
+						}
 
 						if (claim.kind === "claimed") {
 							credential = claim.credential;
@@ -5640,7 +5655,7 @@ export class AuthStorage {
 				const memoKey = `${credentialId}:${credential.refresh}`;
 				const memo = this.#recentOAuthRefreshFailures.get(memoKey);
 				if (memo && memo.expiresAt > Date.now()) {
-					throw memo.error;
+					failBeforeRefresh(memo.error);
 				}
 			}
 			localDial = true;
@@ -5653,10 +5668,12 @@ export class AuthStorage {
 			} else {
 				const customProvider = getOAuthProvider(provider);
 				if (customProvider) {
-					if (!customProvider.refreshToken) {
-						throw new Error(`OAuth provider "${provider}" does not support token refresh`);
+					const refreshToken = customProvider.refreshToken;
+					if (!refreshToken) {
+						failBeforeRefresh(new Error(`OAuth provider "${provider}" does not support token refresh`));
+					} else {
+						refreshPromise = refreshToken(credential);
 					}
-					refreshPromise = customProvider.refreshToken(credential);
 				} else {
 					refreshPromise = refreshOAuthToken(provider as OAuthProvider, credential);
 				}
@@ -5713,6 +5730,7 @@ export class AuthStorage {
 				if (!completeLease?.(refreshLease, persisted)) {
 					throw new Error("OAuth token refresh ownership was lost before persistence");
 				}
+				refreshLeaseCompleted = true;
 				authority.persistedByLease = true;
 			}
 			return authority;
@@ -5742,6 +5760,7 @@ export class AuthStorage {
 		} finally {
 			if (timeout) clearTimeout(timeout);
 			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+			releaseRefreshLease();
 		}
 	}
 
